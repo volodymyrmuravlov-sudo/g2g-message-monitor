@@ -1,0 +1,45 @@
+name: G2G message check
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: g2g-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Check G2G messages
+        env:
+          G2G_COOKIES_JSON: ${{ secrets.G2G_COOKIES_JSON }}
+          G2G_LOCAL_STORAGE_JSON: ${{ secrets.G2G_LOCAL_STORAGE_JSON }}
+          G2G_INBOX_URL: ${{ vars.G2G_INBOX_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/check_messages.py
+
+      - name: Commit state
+        run: |
+          git config user.name "g2g-monitor-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state.json
+          git diff --staged --quiet && echo "No state change" || git commit -m "Update state [skip ci]"
+          git push

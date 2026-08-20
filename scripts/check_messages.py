@@ -1,0 +1,200 @@
+"""Check the G2G chat list for new/changed messages and alert via Telegram.
+
+State (a SHA-256 hash per visible conversation row: name + last message +
+time) is persisted to state.json in the repo, which the workflow commits
+back after every run. Only hashes are stored - never the raw message text -
+since this file lives in git history. Any row whose hash is new or changed
+since the last run means a new message arrived in that conversation -
+regardless of whether G2G moves it to the top of the list.
+"""
+import hashlib
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import requests
+from playwright.sync_api import sync_playwright
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STATE_FILE = REPO_ROOT / "state.json"
+
+INBOX_URL = os.environ.get("G2G_INBOX_URL", "https://www.g2g.com/chat/#/")
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+# Reads every conversation row currently rendered in the G2G chat sidebar.
+# Row structure (confirmed from the live site):
+#   .g-channel-item--main  -> contains sender name + last-message preview
+#   .g-channel-item--side  -> contains the last-message timestamp
+# Both are direct children of the same (unnamed) row wrapper.
+FINGERPRINT_JS = """
+() => Array.from(document.querySelectorAll('.g-channel-item--main')).map(mainEl => {
+    const row = mainEl.parentElement;
+    const side = row ? row.querySelector('.g-channel-item--side') : null;
+    const name = row ? row.querySelector('.text-dark') : null;
+    return {
+        name: name ? name.innerText.trim() : '',
+        text: mainEl.innerText.trim(),
+        time: side ? side.innerText.trim() : '',
+    };
+})
+"""
+
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    return {"known_fingerprints": [], "last_unread_counter": 0}
+
+
+def save_state(state: dict) -> None:
+    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def parse_cookie_editor_json(raw: str) -> list[dict]:
+    """Convert a Cookie-Editor / EditThisCookie JSON export into Playwright cookie dicts."""
+    exported = json.loads(raw)
+    same_site_map = {
+        "no_restriction": "None",
+        "unspecified": "Lax",
+        "lax": "Lax",
+        "strict": "Strict",
+        "none": "None",
+    }
+    cookies = []
+    for c in exported:
+        same_site_raw = str(c.get("sameSite", "lax")).lower()
+        cookies.append({
+            "name": c["name"],
+            "value": c["value"],
+            "domain": c["domain"],
+            "path": c.get("path", "/"),
+            "expires": c.get("expirationDate", -1) if not c.get("session") else -1,
+            "httpOnly": c.get("httpOnly", False),
+            "secure": c.get("secure", True),
+            "sameSite": same_site_map.get(same_site_raw, "Lax"),
+        })
+    return cookies
+
+
+def build_storage_state(cookies: list[dict], local_storage_raw: str) -> dict:
+    """Combine Playwright cookies with a JSON.stringify(localStorage) dump into
+    Playwright's native storage_state format, so the browser context looks
+    fully logged in (G2G keeps its auth JWT in localStorage, not cookies)."""
+    local_storage: dict = json.loads(local_storage_raw)
+    return {
+        "cookies": cookies,
+        "origins": [
+            {
+                "origin": "https://www.g2g.com",
+                "localStorage": [
+                    {"name": k, "value": v} for k, v in local_storage.items()
+                ],
+            }
+        ],
+    }
+
+
+def get_unread_counter(page) -> int | None:
+    raw = page.evaluate("() => localStorage.getItem('chatUnread')")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw).get("counter")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def send_telegram(text: str) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram secrets missing, skipping alert:", text)
+        return
+    resp = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+
+def get_conversation_rows(page) -> list[dict]:
+    return page.evaluate(FINGERPRINT_JS)
+
+
+def fingerprint(row: dict) -> str:
+    raw = f"{row['name']}|{row['text']}|{row['time']}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def main() -> int:
+    cookies_raw = os.environ.get("G2G_COOKIES_JSON")
+    local_storage_raw = os.environ.get("G2G_LOCAL_STORAGE_JSON")
+    if not cookies_raw or not local_storage_raw:
+        print("G2G_COOKIES_JSON / G2G_LOCAL_STORAGE_JSON secret is not set.", file=sys.stderr)
+        return 1
+
+    cookies = parse_cookie_editor_json(cookies_raw)
+    storage_state = build_storage_state(cookies, local_storage_raw)
+    state = load_state()
+    known = set(state.get("known_fingerprints", []))
+    last_counter = state.get("last_unread_counter", 0)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(storage_state=storage_state)
+        page = context.new_page()
+        page.goto(INBOX_URL, timeout=45000)
+        page.wait_for_timeout(3000)
+
+        print(f"DEBUG landed on: {page.url}")
+        print(f"DEBUG title: {page.title()}")
+
+        if "login" in page.url.lower() or "sign" in page.url.lower():
+            send_telegram(
+                "⚠️ G2G monitor: сессия истекла (редирект на страницу входа). "
+                "Нужно обновить cookies и localStorage в GitHub Secrets."
+            )
+            browser.close()
+            return 1
+
+        counter = get_unread_counter(page)
+        print(f"DEBUG chatUnread counter: {counter}")
+
+        try:
+            page.wait_for_selector(".g-channel-item--main", timeout=20000)
+            rows = get_conversation_rows(page)
+        except Exception:
+            rows = []
+            print("WARNING: conversation rows not found on page")
+
+        browser.close()
+
+    current_fps = {fingerprint(r): r for r in rows}
+    new_fps = set(current_fps) - known if rows else set()
+
+    counter_increased = counter is not None and counter > last_counter
+
+    print(f"Rows seen: {len(rows)}, new/changed: {len(new_fps)}, counter increased: {counter_increased}")
+
+    if known and (counter_increased or new_fps):
+        lines = []
+        for fp in list(new_fps)[:5]:
+            r = current_fps[fp]
+            lines.append(f"{r['name']} ({r['time']}): {r['text'][:120]}")
+        header = f"📩 G2G: новое сообщение! Непрочитано: {counter}" if counter is not None else "📩 G2G: новое сообщение!"
+        body = "\n\n".join(lines) if lines else INBOX_URL
+        send_telegram(f"{header}\n\n{body}")
+
+    state["known_fingerprints"] = list(current_fps.keys()) if rows else state.get("known_fingerprints", [])
+    if counter is not None:
+        state["last_unread_counter"] = counter
+    state["last_checked_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    save_state(state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
