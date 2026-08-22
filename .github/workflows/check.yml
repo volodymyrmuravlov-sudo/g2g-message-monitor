@@ -41,5 +41,30 @@ jobs:
           git config user.name "g2g-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
           git add state.json
-          git diff --staged --quiet && echo "No state change" || git commit -m "Update state [skip ci]"
-          git push
+          if git diff --staged --quiet; then
+            echo "No state change"
+            exit 0
+          fi
+          git commit -m "Update state [skip ci]"
+
+          # The concurrency group above mostly serializes runs, but pushes
+          # have still been observed to race and fail with "failed to push
+          # some refs" (non-fast-forward) - retry with a rebase instead of
+          # letting one push conflict fail the whole run.
+          for i in 1 2 3 4 5; do
+            if git push; then
+              echo "Pushed on attempt $i"
+              exit 0
+            fi
+            echo "Push failed (attempt $i/5) - fetching and rebasing before retry..."
+            git fetch origin master
+            if ! git rebase origin/master; then
+              git rebase --abort
+              echo "::error::Rebase conflict on attempt $i - giving up"
+              exit 1
+            fi
+            sleep $((RANDOM % 4 + 1))
+          done
+
+          echo "::error::Failed to push state after 5 attempts"
+          exit 1
