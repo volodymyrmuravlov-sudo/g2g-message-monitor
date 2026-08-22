@@ -129,6 +129,15 @@ def fingerprint(row: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def last_message_is_own(row: dict) -> bool:
+    """True if the row's last-message preview is one you sent yourself
+    (G2G prefixes it with 'Ви:' in this account's UI language) rather than
+    an incoming message from the other side."""
+    parts = row["text"].split("\n", 1)
+    preview = parts[1].strip() if len(parts) > 1 else ""
+    return preview.startswith(("Ви:", "You:"))
+
+
 def main() -> int:
     cookies_raw = os.environ.get("G2G_COOKIES_JSON")
     local_storage_raw = os.environ.get("G2G_LOCAL_STORAGE_JSON")
@@ -173,11 +182,17 @@ def main() -> int:
         browser.close()
 
     current_fps = {fingerprint(r): r for r in rows}
-    new_fps = set(current_fps) - known if rows else set()
+    changed_fps = set(current_fps) - known if rows else set()
+    # Skip rows whose last message is one you sent yourself (e.g. replied
+    # directly in G2G) - those aren't incoming messages worth alerting on.
+    new_fps = {fp for fp in changed_fps if not last_message_is_own(current_fps[fp])}
 
     counter_increased = counter is not None and counter > last_counter
 
-    print(f"Rows seen: {len(rows)}, new/changed: {len(new_fps)}, counter increased: {counter_increased}")
+    print(
+        f"Rows seen: {len(rows)}, changed: {len(changed_fps)}, "
+        f"new (excluding own replies): {len(new_fps)}, counter increased: {counter_increased}"
+    )
 
     if known and (counter_increased or new_fps):
         lines = []
