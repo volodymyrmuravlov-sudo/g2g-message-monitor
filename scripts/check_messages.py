@@ -108,6 +108,33 @@ def get_unread_counter(page) -> int | None:
         return None
 
 
+def translate_to_uk(text: str) -> str:
+    """Best-effort translation to Ukrainian via MyMemory's free public API
+    (no key/signup needed, auto-detects source language). Falls back to the
+    original text on any failure so a translation hiccup never blocks the
+    alert."""
+    if not text.strip():
+        return text
+    try:
+        resp = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text[:490], "langpair": "autodetect|uk"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()["responseData"]["translatedText"]
+    except Exception as exc:
+        print(f"WARNING: translation failed: {exc}")
+        return text
+
+
+def message_preview(row: dict) -> str:
+    """The message-preview part of row['text'], without the sender name
+    (which is joined in front of it via a newline in the DOM)."""
+    parts = row["text"].split("\n", 1)
+    return parts[1].strip() if len(parts) > 1 else row["text"]
+
+
 def send_telegram(text: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram secrets missing, skipping alert:", text)
@@ -133,9 +160,7 @@ def last_message_is_own(row: dict) -> bool:
     """True if the row's last-message preview is one you sent yourself
     (G2G prefixes it with 'Ви:' in this account's UI language) rather than
     an incoming message from the other side."""
-    parts = row["text"].split("\n", 1)
-    preview = parts[1].strip() if len(parts) > 1 else ""
-    return preview.startswith(("Ви:", "You:"))
+    return message_preview(row).startswith(("Ви:", "You:"))
 
 
 def main() -> int:
@@ -198,7 +223,12 @@ def main() -> int:
         lines = []
         for fp in list(new_fps)[:5]:
             r = current_fps[fp]
-            lines.append(f"{r['name']} ({r['time']}): {r['text'][:120]}")
+            preview = message_preview(r)[:300]
+            translated = translate_to_uk(preview)
+            if translated.strip() == preview.strip():
+                lines.append(f"{r['name']} ({r['time']}):\n{preview}")
+            else:
+                lines.append(f"{r['name']} ({r['time']}):\n{translated}\n(ориг.: {preview})")
         header = f"📩 G2G: новое сообщение! Непрочитано: {counter}" if counter is not None else "📩 G2G: новое сообщение!"
         body = "\n\n".join(lines) if lines else INBOX_URL
         send_telegram(f"{header}\n\n{body}")
