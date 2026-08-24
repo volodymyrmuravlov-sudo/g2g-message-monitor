@@ -178,7 +178,15 @@ def main() -> int:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(storage_state=storage_state)
+        # Pin the UI language to Ukrainian - without this, a fresh browser
+        # context sometimes renders G2G in English instead (matching the
+        # account's g2g_regional cookie), which made every row's text look
+        # "changed" between runs and triggered false new-message alerts.
+        context = browser.new_context(
+            storage_state=storage_state,
+            locale="uk-UA",
+            extra_http_headers={"Accept-Language": "uk-UA,uk;q=0.9"},
+        )
         page = context.new_page()
         page.goto(INBOX_URL, timeout=45000)
         page.wait_for_timeout(3000)
