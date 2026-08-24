@@ -161,7 +161,12 @@ def get_conversation_rows(page) -> list[dict]:
 
 
 def fingerprint(row: dict) -> str:
-    raw = f"{row['name']}|{row['text']}|{row['time']}"
+    # Deliberately excludes row["time"]: G2G's displayed date for a row is
+    # recomputed on each render and can flip by a day between two checks
+    # for the exact same message, which made stable old conversations look
+    # "changed" for no real reason. Name + message text is what actually
+    # identifies a distinct message.
+    raw = f"{row['name']}|{row['text']}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
