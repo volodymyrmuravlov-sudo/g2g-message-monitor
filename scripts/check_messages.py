@@ -122,7 +122,16 @@ def translate_to_uk(text: str) -> str:
             timeout=10,
         )
         resp.raise_for_status()
-        return resp.json()["responseData"]["translatedText"]
+        data = resp.json()
+        if data.get("responseStatus") != 200:
+            return text
+        translated = data["responseData"]["translatedText"]
+        # MyMemory returns this exact phrase (not a translation) when the
+        # detected source language is already Ukrainian - the text was
+        # already in Ukrainian, so just keep it as-is.
+        if translated.strip().upper() == "PLEASE SELECT TWO DISTINCT LANGUAGES":
+            return text
+        return translated
     except Exception as exc:
         print(f"WARNING: translation failed: {exc}")
         return text
@@ -161,6 +170,28 @@ def last_message_is_own(row: dict) -> bool:
     (G2G prefixes it with 'Ви:' in this account's UI language) rather than
     an incoming message from the other side."""
     return message_preview(row).startswith(("Ви:", "You:"))
+
+
+SYSTEM_ROW_NAME_MARKERS = ("g2g адмінstars", "g2g adminstars")
+SYSTEM_ROW_TEXT_MARKERS = (
+    "заблокували цього користувача",  # "you blocked this user"
+    "blocked this user",
+    "обліковий запис заблоковано",  # "account suspended"
+    "account suspended",
+    "ласкаво просимо!",  # G2G's own admin welcome message
+    "welcome!",
+)
+
+
+def is_system_row(row: dict) -> bool:
+    """True for G2G's own platform/admin rows (blocked-user notices, account
+    status, the admin welcome message) - never real buyer conversations, and
+    prone to flaky name/time scraping that causes false "changed" hits."""
+    name = row["name"].strip().lower()
+    if not name or name in SYSTEM_ROW_NAME_MARKERS:
+        return True
+    preview = message_preview(row).lower()
+    return any(marker in preview for marker in SYSTEM_ROW_TEXT_MARKERS)
 
 
 def main() -> int:
@@ -217,8 +248,13 @@ def main() -> int:
     current_fps = {fingerprint(r): r for r in rows}
     changed_fps = set(current_fps) - known if rows else set()
     # Skip rows whose last message is one you sent yourself (e.g. replied
-    # directly in G2G) - those aren't incoming messages worth alerting on.
-    new_fps = {fp for fp in changed_fps if not last_message_is_own(current_fps[fp])}
+    # directly in G2G), and G2G's own system/admin rows (blocked-user
+    # notices, account status, the admin welcome message) - neither is a
+    # real incoming buyer message worth alerting on.
+    new_fps = {
+        fp for fp in changed_fps
+        if not last_message_is_own(current_fps[fp]) and not is_system_row(current_fps[fp])
+    }
 
     counter_increased = counter is not None and counter > last_counter
 
