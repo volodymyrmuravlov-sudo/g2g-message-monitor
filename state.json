@@ -1,7 +1,7 @@
 {
   "known_fingerprints": [
     "be82c17162ba07288b34cf96",
-    "6f7e695d69db8c9bb1595c2c",
+    "43812292b4041a4c524e42c0",
     "2ea2e4be973111284692e2d4",
     "f1cdc61a12fd494a37d37a0a",
     "796030d4439f89dc62d55ceb",
@@ -104,5 +104,5 @@
     "699fa0f2f615fa4f0d6c6fa9"
   ],
   "last_unread_counter": 0,
-  "last_checked_utc": "2026-09-15T08:02:04+00:00"
+  "last_checked_utc": "2026-09-15T08:06:10+00:00"
 }
