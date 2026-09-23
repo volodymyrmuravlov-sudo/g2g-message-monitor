@@ -2,6 +2,7 @@
   "known_fingerprints": [
     "be82c17162ba07288b34cf96",
     "9ab97ca17d2d96be77220dbe",
+    "da67fcaf8a12e641ad1edd1c",
     "73b12489914e132880b22d0d",
     "2ea2e4be973111284692e2d4",
     "f1cdc61a12fd494a37d37a0a",
@@ -100,9 +101,8 @@
     "9e53d85197938166de68176e",
     "09a585e6d55ec8efa9d79b0c",
     "76ce828da6c31c3a36d26698",
-    "87db4ed5f89fc7b1dde9e495",
-    "3e5fd0b4670f9be56e4ae2b1"
+    "87db4ed5f89fc7b1dde9e495"
   ],
   "last_unread_counter": 0,
-  "last_checked_utc": "2026-09-22T21:01:56+00:00"
+  "last_checked_utc": "2026-09-23T11:02:39+00:00"
 }
