@@ -145,15 +145,22 @@ def message_preview(row: dict) -> str:
 
 
 def send_telegram(text: str) -> None:
+    # A Telegram delivery failure (bad token, Telegram outage, etc.) must
+    # never crash the run - that would skip saving state.json and leave the
+    # bot stuck re-detecting (and failing to report) the same messages on
+    # every future run. Log it and move on instead.
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram secrets missing, skipping alert:", text)
         return
-    resp = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
-        timeout=15,
-    )
-    resp.raise_for_status()
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"WARNING: Telegram send failed: {exc}")
 
 
 def get_conversation_rows(page) -> list[dict]:
