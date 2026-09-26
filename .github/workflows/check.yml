@@ -31,6 +31,9 @@ jobs:
         env:
           G2G_COOKIES_JSON: ${{ secrets.G2G_COOKIES_JSON }}
           G2G_LOCAL_STORAGE_JSON: ${{ secrets.G2G_LOCAL_STORAGE_JSON }}
+          G2G_SESSION_JSON: ${{ secrets.G2G_SESSION_JSON }}
+          G2G_USER_ID: ${{ vars.G2G_USER_ID }}
+          GH_PAT_SECRETS: ${{ secrets.GH_PAT_SECRETS }}
           G2G_INBOX_URL: ${{ vars.G2G_INBOX_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

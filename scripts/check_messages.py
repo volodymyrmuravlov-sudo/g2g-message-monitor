@@ -7,6 +7,7 @@ since this file lives in git history. Any row whose hash is new or changed
 since the last run means a new message arrived in that conversation -
 regardless of whether G2G moves it to the top of the list.
 """
+import base64
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+from nacl import encoding, public
 from playwright.sync_api import sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +26,10 @@ INBOX_URL = os.environ.get("G2G_INBOX_URL", "https://www.g2g.com/chat/#/")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+G2G_USER_ID = os.environ.get("G2G_USER_ID")
+GH_PAT_SECRETS = os.environ.get("GH_PAT_SECRETS")
+GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY")  # "owner/repo", set by Actions
 
 # Reads every conversation row currently rendered in the G2G chat sidebar.
 # Row structure (confirmed from the live site):
@@ -96,6 +102,89 @@ def build_storage_state(cookies: list[dict], local_storage_raw: str) -> dict:
             }
         ],
     }
+
+
+def github_update_secret(name: str, value: str) -> bool:
+    """Set a repo secret via the GitHub API (client-side sealed-box
+    encryption, as required by the Secrets API). Requires GH_PAT_SECRETS to
+    have "Secrets: Read and write" permission on this repo."""
+    if not GH_PAT_SECRETS or not GITHUB_REPOSITORY:
+        print("WARNING: GH_PAT_SECRETS/GITHUB_REPOSITORY not set, cannot persist refreshed session")
+        return False
+    headers = {
+        "Authorization": f"Bearer {GH_PAT_SECRETS}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        key_resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/secrets/public-key",
+            headers=headers, timeout=15,
+        )
+        key_resp.raise_for_status()
+        key_data = key_resp.json()
+        public_key = public.PublicKey(key_data["key"], encoding.Base64Encoder())
+        sealed_box = public.SealedBox(public_key)
+        encrypted = sealed_box.encrypt(value.encode("utf-8"))
+        encrypted_b64 = base64.b64encode(encrypted).decode("utf-8")
+
+        put_resp = requests.put(
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/secrets/{name}",
+            headers=headers,
+            json={"encrypted_value": encrypted_b64, "key_id": key_data["key_id"]},
+            timeout=15,
+        )
+        put_resp.raise_for_status()
+        return True
+    except Exception as exc:
+        print(f"WARNING: failed to update secret {name}: {exc}")
+        return False
+
+
+def refresh_g2g_session(current_access_token: str) -> dict | None:
+    """Call G2G's own token-refresh endpoint (the same one the site itself
+    uses when an API call gets a 401) to get a fresh access_token and a
+    rotated refresh_token, extending the session without ever needing a
+    manual cookie/localStorage re-export. Returns the new token payload, or
+    None if the refresh itself failed (caller falls back to the stored,
+    possibly-stale session)."""
+    session_raw = os.environ.get("G2G_SESSION_JSON")
+    if not session_raw or not G2G_USER_ID:
+        print("WARNING: G2G_SESSION_JSON/G2G_USER_ID not set, skipping session refresh")
+        return None
+    try:
+        session = json.loads(session_raw)
+        resp = requests.post(
+            "https://sls.g2g.com/user/refresh_access",
+            headers={
+                "Authorization": current_access_token,
+                "Content-Type": "application/json",
+                "Origin": "https://www.g2g.com",
+                "Referer": "https://www.g2g.com/",
+            },
+            json={
+                "user_id": G2G_USER_ID,
+                "refresh_token": session["refresh_token"],
+                "active_device_token": session["active_device_token"],
+                "long_lived_token": session["long_lived_token"],
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        payload = resp.json()["payload"]
+
+        new_session = {
+            "refresh_token": payload["refresh_token"],
+            "active_device_token": payload["active_device_token"],
+            "long_lived_token": payload["long_lived_token"],
+        }
+        if new_session != session:
+            github_update_secret("G2G_SESSION_JSON", json.dumps(new_session))
+
+        return payload
+    except Exception as exc:
+        print(f"WARNING: G2G session refresh failed: {exc}")
+        return None
 
 
 def get_unread_counter(page) -> int | None:
@@ -214,7 +303,16 @@ def main() -> int:
         return 1
 
     cookies = parse_cookie_editor_json(cookies_raw)
-    storage_state = build_storage_state(cookies, local_storage_raw)
+    local_storage = json.loads(local_storage_raw)
+
+    refreshed = refresh_g2g_session(local_storage.get("accessToken", ""))
+    if refreshed:
+        local_storage["accessToken"] = refreshed["access_token"]
+        print("DEBUG session refresh: success")
+    else:
+        print("DEBUG session refresh: failed, using stored session as-is")
+
+    storage_state = build_storage_state(cookies, json.dumps(local_storage))
     state = load_state()
     known = set(state.get("known_fingerprints", []))
     last_counter = state.get("last_unread_counter", 0)
