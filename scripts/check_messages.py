@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -152,39 +153,48 @@ def refresh_g2g_session(current_access_token: str) -> dict | None:
     if not session_raw or not G2G_USER_ID:
         print("WARNING: G2G_SESSION_JSON/G2G_USER_ID not set, skipping session refresh")
         return None
-    try:
-        session = json.loads(session_raw)
-        resp = requests.post(
-            "https://sls.g2g.com/user/refresh_access",
-            headers={
-                "Authorization": current_access_token,
-                "Content-Type": "application/json",
-                "Origin": "https://www.g2g.com",
-                "Referer": "https://www.g2g.com/",
-            },
-            json={
-                "user_id": G2G_USER_ID,
-                "refresh_token": session["refresh_token"],
-                "active_device_token": session["active_device_token"],
-                "long_lived_token": session["long_lived_token"],
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        payload = resp.json()["payload"]
+    session = json.loads(session_raw)
 
-        new_session = {
-            "refresh_token": payload["refresh_token"],
-            "active_device_token": payload["active_device_token"],
-            "long_lived_token": payload["long_lived_token"],
-        }
-        if new_session != session:
-            github_update_secret("G2G_SESSION_JSON", json.dumps(new_session))
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                "https://sls.g2g.com/user/refresh_access",
+                headers={
+                    "Authorization": current_access_token,
+                    "Content-Type": "application/json",
+                    "Origin": "https://www.g2g.com",
+                    "Referer": "https://www.g2g.com/",
+                },
+                json={
+                    "user_id": G2G_USER_ID,
+                    "refresh_token": session["refresh_token"],
+                    "active_device_token": session["active_device_token"],
+                    "long_lived_token": session["long_lived_token"],
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            payload = resp.json()["payload"]
 
-        return payload
-    except Exception as exc:
-        print(f"WARNING: G2G session refresh failed: {exc}")
-        return None
+            new_session = {
+                "refresh_token": payload["refresh_token"],
+                "active_device_token": payload["active_device_token"],
+                "long_lived_token": payload["long_lived_token"],
+            }
+            if new_session != session:
+                github_update_secret("G2G_SESSION_JSON", json.dumps(new_session))
+
+            return payload
+        except Exception as exc:
+            # G2G's refresh endpoint occasionally answers with a transient
+            # 429/5xx. Retrying a couple of times within the same run avoids
+            # falling back to the stale localStorage access token (which is
+            # always already expired) and firing a false "session expired"
+            # alert for what is really just a few seconds of rate limiting.
+            print(f"WARNING: G2G session refresh attempt {attempt + 1}/3 failed: {exc}")
+            if attempt < 2:
+                time.sleep(5)
+    return None
 
 
 def get_unread_counter(page) -> int | None:
@@ -336,12 +346,24 @@ def main() -> int:
         print(f"DEBUG title: {page.title()}")
 
         if "login" in page.url.lower() or "sign" in page.url.lower():
-            send_telegram(
-                "⚠️ G2G monitor: сессия истекла (редирект на страницу входа). "
-                "Нужно обновить cookies и localStorage в GitHub Secrets."
-            )
             browser.close()
+            # Only alert once this has happened on two runs in a row (~10
+            # minutes) - a single redirect is almost always a transient
+            # hiccup (e.g. G2G rate-limiting the refresh_access call for a
+            # few seconds) that resolves itself on the very next run, and
+            # alerting on it just causes unnecessary panic.
+            failures = state.get("consecutive_login_failures", 0) + 1
+            state["consecutive_login_failures"] = failures
+            save_state(state)
+            if failures >= 2:
+                send_telegram(
+                    "⚠️ G2G monitor: сессия истекла (редирект на страницу входа), "
+                    f"не восстановилась за {failures} запусков подряд. "
+                    "Нужно обновить cookies и localStorage в GitHub Secrets."
+                )
             return 1
+
+        state["consecutive_login_failures"] = 0
 
         counter = get_unread_counter(page)
         print(f"DEBUG chatUnread counter: {counter}")
