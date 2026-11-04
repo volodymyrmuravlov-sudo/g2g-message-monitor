@@ -283,7 +283,10 @@ def last_message_is_own(row: dict) -> bool:
     return message_preview(row).startswith(("Ви:", "You:"))
 
 
-SYSTEM_ROW_NAME_MARKERS = ("g2g адмінstars", "g2g adminstars")
+SYSTEM_ROW_NAME_MARKERS = (
+    "g2g адмінstars", "g2g adminstars",
+    "game accounts",  # the "Game Accounts" group chat is G2G's weekly admin ad blast, not a buyer
+)
 SYSTEM_ROW_TEXT_MARKERS = (
     "заблокували цього користувача",  # "you blocked this user"
     "blocked this user",
@@ -291,6 +294,8 @@ SYSTEM_ROW_TEXT_MARKERS = (
     "account suspended",
     "ласкаво просимо!",  # G2G's own admin welcome message
     "welcome!",
+    "dear seller,",  # G2G Адмін's recurring weekly promo broadcast (e.g. "we have added the below games")
+    "шановн",  # Ukrainian-rendered variants of the same "Dear Seller/Customer, ..." admin broadcast prefix
 )
 
 
@@ -389,13 +394,19 @@ def main() -> int:
     }
 
     counter_increased = counter is not None and counter > last_counter
+    # Only fall back to the counter when rows couldn't be scraped at all -
+    # G2G's own unread counter also goes up for admin/ad broadcasts (e.g.
+    # the weekly "Dear Seller, we have added..." message), which is_system_row
+    # already excludes from new_fps, so counter_increased alone must not
+    # re-introduce an alert for those when we *did* see the rows.
+    alert_trigger = bool(new_fps) or (counter_increased and not rows)
 
     print(
         f"Rows seen: {len(rows)}, changed: {len(changed_fps)}, "
         f"new (excluding own replies): {len(new_fps)}, counter increased: {counter_increased}"
     )
 
-    if known and (counter_increased or new_fps):
+    if known and alert_trigger:
         lines = []
         for fp in list(new_fps)[:5]:
             r = current_fps[fp]
