@@ -1,7 +1,7 @@
 {
   "known_fingerprints": [
     "9b29081c96bc9cae60b19b4a",
-    "b641405636a1e0c6aff2e954",
+    "41f11c4fa11a43676027f33a",
     "9fea589c9cdadd0aa49ccf22",
     "f6b2b425463d73d7a802bed7",
     "3cf8e58505be542e89086f2f",
@@ -103,7 +103,7 @@
     "86629f80cc04fd94127b8b87",
     "b5ccd94a583786efe6223d33"
   ],
-  "last_unread_counter": 0,
-  "last_checked_utc": "2026-11-06T02:09:06+00:00",
+  "last_unread_counter": 3,
+  "last_checked_utc": "2026-11-06T02:11:09+00:00",
   "consecutive_login_failures": 0
 }
