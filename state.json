@@ -2,7 +2,7 @@
   "known_fingerprints": [
     "9b29081c96bc9cae60b19b4a",
     "10a1212478fb0248b2e183b3",
-    "0e301303253ca498cdd0a9b6",
+    "d184f65c186d28cba3da6cd5",
     "112ba6fc345d1feaf467cc75",
     "53052a0f89b8b95de73ddbe5",
     "9d832341563a058363a280e3",
@@ -104,6 +104,6 @@
     "f382ba6700726ebe6f6a757b"
   ],
   "last_unread_counter": 0,
-  "last_checked_utc": "2026-11-24T16:26:06+00:00",
+  "last_checked_utc": "2026-11-24T16:31:24+00:00",
   "consecutive_login_failures": 0
 }
